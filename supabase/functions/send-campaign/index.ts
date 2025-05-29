@@ -38,7 +38,7 @@ const handler = async (req: Request): Promise<Response> => {
         *,
         contact_lists!inner(
           contact_list_memberships(
-            contacts(email, first_name, last_name)
+            contacts(email, first_name, last_name, phone)
           )
         )
       `)
@@ -97,8 +97,9 @@ async function sendEmailCampaign(campaign: any, supabaseClient: any) {
       
       totalSent++;
       delivered++;
+      console.log(`Email sent successfully to ${contact.email}`);
     } catch (error) {
-      console.error(`Failed to send to ${contact.email}:`, error);
+      console.error(`Failed to send email to ${contact.email}:`, error);
       totalSent++;
     }
   }
@@ -114,22 +115,68 @@ async function sendEmailCampaign(campaign: any, supabaseClient: any) {
 }
 
 async function sendSMSCampaign(campaign: any, supabaseClient: any) {
-  // SMS sending would require a service like Twilio
-  // This is a placeholder implementation
-  console.log('SMS campaign sending not implemented yet');
-  
+  const twilioAccountSid = Deno.env.get('TWILIO_ACCOUNT_SID');
+  const twilioAuthToken = Deno.env.get('TWILIO_AUTH_TOKEN');
+  const twilioPhoneNumber = Deno.env.get('TWILIO_PHONE_NUMBER');
+
+  if (!twilioAccountSid || !twilioAuthToken || !twilioPhoneNumber) {
+    throw new Error('Twilio credentials not configured');
+  }
+
   const contacts = campaign.contact_lists.contact_list_memberships
     .map((membership: any) => membership.contacts)
     .filter((contact: any) => contact.phone);
 
-  // Update analytics with mock data
+  let totalSent = 0;
+  let delivered = 0;
+
+  // Create Twilio client credentials
+  const auth = btoa(`${twilioAccountSid}:${twilioAuthToken}`);
+
+  for (const contact of contacts) {
+    try {
+      // Personalize the SMS content
+      const personalizedContent = campaign.content.replace('{{first_name}}', contact.first_name || 'there');
+      
+      const response = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${twilioAccountSid}/Messages.json`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Basic ${auth}`,
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: new URLSearchParams({
+          From: twilioPhoneNumber,
+          To: contact.phone,
+          Body: personalizedContent,
+        }),
+      });
+
+      if (response.ok) {
+        const result = await response.json();
+        console.log(`SMS sent successfully to ${contact.phone}:`, result.sid);
+        delivered++;
+      } else {
+        const error = await response.text();
+        console.error(`Failed to send SMS to ${contact.phone}:`, error);
+      }
+      
+      totalSent++;
+    } catch (error) {
+      console.error(`Failed to send SMS to ${contact.phone}:`, error);
+      totalSent++;
+    }
+  }
+
+  // Update analytics
   await supabaseClient
     .from('campaign_analytics')
     .insert({
       campaign_id: campaign.id,
-      total_sent: contacts.length,
-      delivered: contacts.length
+      total_sent: totalSent,
+      delivered: delivered
     });
+
+  console.log(`SMS campaign completed. Total sent: ${totalSent}, Delivered: ${delivered}`);
 }
 
 serve(handler);
