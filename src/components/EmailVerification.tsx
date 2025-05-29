@@ -1,13 +1,13 @@
-
 import React, { useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
 import { Upload, CheckCircle, XCircle, AlertTriangle, Download, Mail } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
+import { supabase } from '@/integrations/supabase/client';
+import { useQuery } from '@tanstack/react-query';
 
 interface EmailStatus {
   email: string;
@@ -21,6 +21,21 @@ export const EmailVerification: React.FC = () => {
   const [isVerifying, setIsVerifying] = useState(false);
   const [progress, setProgress] = useState(0);
   const { toast } = useToast();
+
+  // Fetch recent verification batches
+  const { data: batches, refetch } = useQuery({
+    queryKey: ['verification-batches'],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('verification_batches')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(5);
+      
+      if (error) throw error;
+      return data;
+    }
+  });
 
   const validateEmail = (email: string): EmailStatus => {
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -52,32 +67,54 @@ export const EmailVerification: React.FC = () => {
       return;
     }
 
-    setIsVerifying(true);
-    setProgress(0);
-    setVerificationResults([]);
-
     const emails = emailList
       .split('\n')
       .map(email => email.trim())
       .filter(email => email.length > 0);
 
-    const results: EmailStatus[] = [];
-    
-    for (let i = 0; i < emails.length; i++) {
-      // Simulate API delay
-      await new Promise(resolve => setTimeout(resolve, 100));
-      
-      const result = validateEmail(emails[i]);
-      results.push(result);
-      setVerificationResults([...results]);
-      setProgress(((i + 1) / emails.length) * 100);
+    if (emails.length === 0) {
+      toast({
+        title: "Error",
+        description: "No valid email addresses found",
+        variant: "destructive"
+      });
+      return;
     }
 
-    setIsVerifying(false);
-    toast({
-      title: "Verification Complete",
-      description: `Verified ${emails.length} email addresses`
-    });
+    setIsVerifying(true);
+    setProgress(0);
+    setVerificationResults([]);
+
+    try {
+      const { data, error } = await supabase.functions.invoke('verify-emails', {
+        body: { emails }
+      });
+
+      if (error) throw error;
+
+      // Simulate progress updates
+      for (let i = 0; i <= 100; i += 10) {
+        setProgress(i);
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+
+      setVerificationResults(data.results);
+      await refetch();
+
+      toast({
+        title: "Verification Complete",
+        description: `Verified ${emails.length} email addresses`
+      });
+    } catch (error) {
+      console.error('Verification error:', error);
+      toast({
+        title: "Verification Failed",
+        description: "Failed to verify emails. Please try again.",
+        variant: "destructive"
+      });
+    } finally {
+      setIsVerifying(false);
+    }
   };
 
   const getStatusColor = (status: string) => {
@@ -169,45 +206,76 @@ export const EmailVerification: React.FC = () => {
           </CardContent>
         </Card>
 
-        <Card className="border-0 shadow-lg">
-          <CardHeader>
-            <CardTitle>Verification Summary</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="text-center">
-              <div className="text-2xl font-bold text-gray-900">
-                {verificationResults.length}
-              </div>
-              <p className="text-sm text-gray-500">Total Verified</p>
-            </div>
-
-            <div className="space-y-3">
-              <div className="flex items-center justify-between p-3 bg-green-50 rounded-lg">
-                <div className="flex items-center space-x-2">
-                  <CheckCircle className="w-5 h-5 text-green-600" />
-                  <span className="font-medium">Valid</span>
+        <div className="space-y-6">
+          <Card className="border-0 shadow-lg">
+            <CardHeader>
+              <CardTitle>Verification Summary</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="text-center">
+                <div className="text-2xl font-bold text-gray-900">
+                  {verificationResults.length}
                 </div>
-                <span className="font-bold text-green-600">{validCount}</span>
+                <p className="text-sm text-gray-500">Total Verified</p>
               </div>
 
-              <div className="flex items-center justify-between p-3 bg-yellow-50 rounded-lg">
-                <div className="flex items-center space-x-2">
-                  <AlertTriangle className="w-5 h-5 text-yellow-600" />
-                  <span className="font-medium">Risky</span>
+              <div className="space-y-3">
+                <div className="flex items-center justify-between p-3 bg-green-50 rounded-lg">
+                  <div className="flex items-center space-x-2">
+                    <CheckCircle className="w-5 h-5 text-green-600" />
+                    <span className="font-medium">Valid</span>
+                  </div>
+                  <span className="font-bold text-green-600">{validCount}</span>
                 </div>
-                <span className="font-bold text-yellow-600">{riskyCount}</span>
-              </div>
 
-              <div className="flex items-center justify-between p-3 bg-red-50 rounded-lg">
-                <div className="flex items-center space-x-2">
-                  <XCircle className="w-5 h-5 text-red-600" />
-                  <span className="font-medium">Invalid</span>
+                <div className="flex items-center justify-between p-3 bg-yellow-50 rounded-lg">
+                  <div className="flex items-center space-x-2">
+                    <AlertTriangle className="w-5 h-5 text-yellow-600" />
+                    <span className="font-medium">Risky</span>
+                  </div>
+                  <span className="font-bold text-yellow-600">{riskyCount}</span>
                 </div>
-                <span className="font-bold text-red-600">{invalidCount}</span>
+
+                <div className="flex items-center justify-between p-3 bg-red-50 rounded-lg">
+                  <div className="flex items-center space-x-2">
+                    <XCircle className="w-5 h-5 text-red-600" />
+                    <span className="font-medium">Invalid</span>
+                  </div>
+                  <span className="font-bold text-red-600">{invalidCount}</span>
+                </div>
               </div>
-            </div>
-          </CardContent>
-        </Card>
+            </CardContent>
+          </Card>
+
+          {batches && batches.length > 0 && (
+            <Card className="border-0 shadow-lg">
+              <CardHeader>
+                <CardTitle>Recent Batches</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-2">
+                  {batches.map((batch) => (
+                    <div key={batch.id} className="p-3 bg-gray-50 rounded-lg">
+                      <div className="flex justify-between items-center">
+                        <span className="text-sm font-medium">
+                          {batch.total_emails} emails
+                        </span>
+                        <Badge variant={batch.status === 'completed' ? 'default' : 'secondary'}>
+                          {batch.status}
+                        </Badge>
+                      </div>
+                      {batch.status === 'completed' && (
+                        <div className="text-xs text-gray-500 mt-1">
+                          Valid: {batch.valid_emails} | Invalid: {batch.invalid_emails} | Risky: {batch.risky_emails}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          )}
+        </div>
       </div>
 
       {verificationResults.length > 0 && (
